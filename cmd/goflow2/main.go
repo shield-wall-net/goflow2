@@ -274,7 +274,7 @@ func main() {
 						if errors.Is(err, netflow.ErrorTemplateNotFound) {
 							logger.Warn("template error", slog.String("error", err.Error()))
 						} else if errors.Is(err, net.ErrClosed) {
-							logger.Info("closed received")
+							logger.Info("receiver closed")
 						} else {
 							logger.Info("error", slog.String("error", err.Error()))
 						}
