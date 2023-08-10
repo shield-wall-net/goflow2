@@ -6,6 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -41,7 +43,6 @@ import (
 	"github.com/netsampler/goflow2/v2/utils"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
 )
 
@@ -83,22 +84,33 @@ func main() {
 		os.Exit(0)
 	}
 
-	lvl, _ := log.ParseLevel(*LogLevel)
-	log.SetLevel(lvl)
+	var loglevel slog.Level
+	if err := loglevel.UnmarshalText([]byte(*LogLevel)); err != nil {
+		log.Fatal("error parsing log level")
+	}
+
+	lo := slog.HandlerOptions{
+		Level: loglevel,
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &lo))
 
 	switch *LogFmt {
 	case "json":
-		log.SetFormatter(&log.JSONFormatter{})
+		logger = slog.New(slog.NewJSONHandler(os.Stderr, &lo))
 	}
+
+	slog.SetDefault(logger)
 
 	formatter, err := format.FindFormat(*Format)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("error formatter", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 
 	transporter, err := transport.FindTransport(*Transport)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("error transporter", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 
 	var flowProducer producer.ProducerInterface
@@ -109,23 +121,27 @@ func main() {
 		if *MappingFile != "" {
 			f, err := os.Open(*MappingFile)
 			if err != nil {
-				log.Fatal(err)
+				slog.Error("error opening mapping", slog.String("error", err.Error()))
+				os.Exit(1)
 			}
 			cfgProducer, err = LoadMapping(f)
 			f.Close()
 			if err != nil {
-				log.Fatal(err)
+				slog.Error("error loading mapping", slog.String("error", err.Error()))
+				os.Exit(1)
 			}
 		}
 
 		flowProducer, err = protoproducer.CreateProtoProducer(cfgProducer, protoproducer.CreateSamplingSystem)
 		if err != nil {
-			log.Fatal(err)
+			slog.Error("error producer", slog.String("error", err.Error()))
+			os.Exit(1)
 		}
 	} else if *Produce == "raw" {
 		flowProducer = &rawproducer.RawProducer{}
 	} else {
-		log.Fatalf("producer %s does not exist", *Produce)
+		slog.Error("producer does not exist", slog.String("error", err.Error()), slog.String("producer", *Produce))
+		os.Exit(1)
 	}
 
 	// wrap producer with Prometheus metrics
@@ -139,12 +155,13 @@ func main() {
 		if !collecting {
 			wr.WriteHeader(http.StatusServiceUnavailable)
 			if _, err := wr.Write([]byte("Not OK\n")); err != nil {
-				log.WithError(err).Error("error writing HTTP")
+				slog.Error("error writing HTTP", slog.String("error", err.Error()))
 			}
 		} else {
 			wr.WriteHeader(http.StatusOK)
 			if _, err := wr.Write([]byte("OK\n")); err != nil {
-				log.WithError(err).Error("error writing HTTP")
+				slog.Error("error writing HTTP", slog.String("error", err.Error()))
+
 			}
 		}
 	})
@@ -156,18 +173,17 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			l := log.WithFields(log.Fields{
-				"http": *Addr,
-			})
+			logger := logger.With(slog.String("http", *Addr))
 			err := srv.ListenAndServe()
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				l.WithError(err).Fatal("HTTP server error")
+				slog.Error("HTTP server error", slog.String("error", err.Error()))
+				os.Exit(1)
 			}
-			l.Info("closed HTTP server")
+			logger.Info("closed HTTP server")
 		}()
 	}
 
-	log.Info("starting GoFlow2")
+	logger.Info("starting GoFlow2")
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -179,12 +195,14 @@ func main() {
 	for _, listenAddress := range strings.Split(*ListenAddresses, ",") {
 		listenAddrUrl, err := url.Parse(listenAddress)
 		if err != nil {
-			log.Fatal(err)
+			logger.Error("error parsing address", slog.String("error", err.Error()))
+			os.Exit(1)
 		}
 		numSockets := 1
 		if listenAddrUrl.Query().Has("count") {
 			if numSocketsTmp, err := strconv.ParseUint(listenAddrUrl.Query().Get("count"), 10, 64); err != nil {
-				log.Fatal(err)
+				slog.Error("error parsing count in URL", slog.String("error", err.Error()))
+				os.Exit(1)
 			} else {
 				numSockets = int(numSocketsTmp)
 			}
@@ -196,26 +214,26 @@ func main() {
 		hostname := listenAddrUrl.Hostname()
 		port, err := strconv.ParseUint(listenAddrUrl.Port(), 10, 64)
 		if err != nil {
-			log.Errorf("Port %s could not be converted to integer", listenAddrUrl.Port())
-			return
+			slog.Error("port could not be converted to integer", slog.String("port", listenAddrUrl.Port()))
+			os.Exit(1)
 		}
 
-		logFields := log.Fields{
-			"scheme":   listenAddrUrl.Scheme,
-			"hostname": hostname,
-			"port":     port,
-			"count":    numSockets,
+		logAttr := []any{
+			slog.String("scheme", listenAddrUrl.Scheme),
+			slog.String("hostname", hostname),
+			slog.Int64("port", int64(port)),
+			slog.Int("count", numSockets),
 		}
-		l := log.WithFields(logFields)
-
-		l.Info("starting collection")
+		logger := logger.With(logAttr...)
+		logger.Info("starting collection")
 
 		cfg := &utils.UDPReceiverConfig{
 			Sockets: numSockets,
 		}
 		recv, err := utils.NewUDPReceiver(cfg)
 		if err != nil {
-			log.WithError(err).Fatal("error creating UDP receiver")
+			logger.Error("error creating UDP receiver", slog.String("error", err.Error()))
+			os.Exit(1)
 		}
 
 		cfgPipe := &utils.PipeConfig{
@@ -232,8 +250,8 @@ func main() {
 		} else if listenAddrUrl.Scheme == "netflow" {
 			p = utils.NewNetFlowPipe(cfgPipe)
 		} else {
-			l.Errorf("scheme %s does not exist", listenAddrUrl.Scheme)
-			return
+			logger.Error("scheme does not exist", slog.String("error", listenAddrUrl.Scheme))
+			os.Exit(1)
 		}
 		decodeFunc = metrics.PromDecoderWrapper(p.DecodeFlow, listenAddrUrl.Scheme)
 		pipes = append(pipes, p)
@@ -241,7 +259,8 @@ func main() {
 		// starts receivers
 		// the function either returns an error
 		if err := recv.Start(hostname, int(port), decodeFunc); err != nil {
-			l.Fatal(err)
+			logger.Error("error starting", slog.String("error", listenAddrUrl.Scheme))
+			os.Exit(1)
 		} else {
 			wg.Add(1)
 			go func() {
@@ -252,13 +271,12 @@ func main() {
 					case <-q:
 						return
 					case err := <-recv.Errors():
-						l := l.WithError(err)
 						if errors.Is(err, netflow.ErrorTemplateNotFound) {
-							l.Warn("template error")
+							logger.Warn("template error", slog.String("error", err.Error()))
 						} else if errors.Is(err, net.ErrClosed) {
-							l.Info("closed receiver")
+							logger.Info("closed received")
 						} else {
-							l.Error("error")
+							logger.Info("error", slog.String("error", err.Error()))
 						}
 
 					}
@@ -288,8 +306,7 @@ func main() {
 				if err == nil {
 					return
 				}
-				l := log.WithError(err)
-				l.Error("transport error")
+				logger.Error("transport error", slog.String("error", err.Error()))
 			}
 		}
 	}()
@@ -303,7 +320,7 @@ func main() {
 	// stops receivers first, udp sockets will be down
 	for _, recv := range receivers {
 		if err := recv.Stop(); err != nil {
-			log.WithError(err).Error("error stopping receiver")
+			logger.Error("error stopping receiver", slog.String("error", err.Error()))
 		}
 	}
 	// then stop pipe
@@ -314,11 +331,11 @@ func main() {
 	flowProducer.Close()
 	// close transporter (eg: flushes message to Kafka)
 	transporter.Close()
-	log.Info("closed transporter")
+	logger.Info("closed transporter")
 	// close http server (prometheus + health check)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	if err := srv.Shutdown(ctx); err != nil {
-		log.WithError(err).Error("error shutting-down HTTP server")
+		logger.Error("error shutting-down HTTP server", slog.String("error", err.Error()))
 	}
 	cancel()
 	close(q) // close errors
