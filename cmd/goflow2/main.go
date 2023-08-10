@@ -306,7 +306,7 @@ func main() {
 				if err == nil {
 					return
 				}
-				logger.Error("transport error", slog.String("error", err.Error()))
+				logger.Error("transporter error", slog.String("error", err.Error()))
 			}
 		}
 	}()
@@ -331,7 +331,7 @@ func main() {
 	flowProducer.Close()
 	// close transporter (eg: flushes message to Kafka)
 	transporter.Close()
-	logger.Info("closed transporter")
+	logger.Info("transporter closed")
 	// close http server (prometheus + health check)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	if err := srv.Shutdown(ctx); err != nil {
