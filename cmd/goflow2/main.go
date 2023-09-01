@@ -201,7 +201,7 @@ func main() {
 		numSockets := 1
 		if listenAddrUrl.Query().Has("count") {
 			if numSocketsTmp, err := strconv.ParseUint(listenAddrUrl.Query().Get("count"), 10, 64); err != nil {
-				slog.Error("error parsing count in URL", slog.String("error", err.Error()))
+				slog.Error("error parsing count of sockets in URL", slog.String("error", err.Error()))
 				os.Exit(1)
 			} else {
 				numSockets = int(numSocketsTmp)
@@ -214,7 +214,8 @@ func main() {
 		var numWorkers int
 		if listenAddrUrl.Query().Has("workers") {
 			if numWorkersTmp, err := strconv.ParseUint(listenAddrUrl.Query().Get("workers"), 10, 64); err != nil {
-				log.Fatal(err)
+				slog.Error("error parsing workers in URL", slog.String("error", err.Error()))
+				os.Exit(1)
 			} else {
 				numWorkers = int(numWorkersTmp)
 			}
@@ -226,14 +227,16 @@ func main() {
 		var isBlocking bool
 		if listenAddrUrl.Query().Has("blocking") {
 			if isBlocking, err = strconv.ParseBool(listenAddrUrl.Query().Get("blocking")); err != nil {
-				log.Fatal(err)
+				slog.Error("error parsing blocking in URL", slog.String("error", err.Error()))
+				os.Exit(1)
 			}
 		}
 
 		var queueSize int
 		if listenAddrUrl.Query().Has("queue_size") {
 			if queueSizeTmp, err := strconv.ParseUint(listenAddrUrl.Query().Get("queue_size"), 10, 64); err != nil {
-				log.Fatal(err)
+				slog.Error("error parsing queue_size in URL", slog.String("error", err.Error()))
+				os.Exit(1)
 			} else {
 				queueSize = int(queueSizeTmp)
 			}
