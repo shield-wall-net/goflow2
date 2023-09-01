@@ -3,7 +3,6 @@ package protoproducer
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -47,19 +46,11 @@ func (s *basicSamplingRateSystem) AddSamplingRate(version uint16, obsDomainId ui
 func (s *basicSamplingRateSystem) GetSamplingRate(version uint16, obsDomainId uint32) (uint32, error) {
 	s.samplinglock.RLock()
 	defer s.samplinglock.RUnlock()
-	/*samplingVersion, okver := s.sampling[version]
-	if okver {
-		samplingRate, okid := samplingVersion[obsDomainId]
-		if okid {
-			return samplingRate, nil
-		}
-		return 0, errors.New("") // TBC
-	}*/
 	if samplingRate, ok := s.sampling[fmt.Sprintf("%d-%d", version, obsDomainId)]; ok {
 		return samplingRate, nil
 	}
 
-	return 0, errors.New("") // TBC // todo: now
+	return 0, fmt.Errorf("sampling rate not found")
 }
 
 type SingleSamplingRateSystem struct {
@@ -494,13 +485,13 @@ func ConvertNetFlowDataSet(flowMessage *ProtoProducerMessage, version uint16, ba
 			if err := DecodeUNumber(v, &fragOffset); err != nil {
 				return err
 			}
-			flowMessage.FragmentOffset |= fragOffset
+			flowMessage.FragmentOffset = fragOffset
 		case netflow.IPFIX_FIELD_fragmentFlags:
 			var ipFlags uint32
 			if err := DecodeUNumber(v, &ipFlags); err != nil {
 				return err
 			}
-			flowMessage.FragmentOffset |= ipFlags
+			flowMessage.IpFlags = ipFlags
 		case netflow.NFV9_FIELD_IPV6_FLOW_LABEL:
 			if err := DecodeUNumber(v, &(flowMessage.Ipv6FlowLabel)); err != nil {
 				return err

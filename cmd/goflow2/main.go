@@ -211,6 +211,36 @@ func main() {
 			numSockets = 1
 		}
 
+		var numWorkers int
+		if listenAddrUrl.Query().Has("workers") {
+			if numWorkersTmp, err := strconv.ParseUint(listenAddrUrl.Query().Get("workers"), 10, 64); err != nil {
+				log.Fatal(err)
+			} else {
+				numWorkers = int(numWorkersTmp)
+			}
+		}
+		if numWorkers == 0 {
+			numWorkers = numSockets * 2
+		}
+
+		var isBlocking bool
+		if listenAddrUrl.Query().Has("blocking") {
+			if isBlocking, err = strconv.ParseBool(listenAddrUrl.Query().Get("blocking")); err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		var queueSize int
+		if listenAddrUrl.Query().Has("queue_size") {
+			if queueSizeTmp, err := strconv.ParseUint(listenAddrUrl.Query().Get("queue_size"), 10, 64); err != nil {
+				log.Fatal(err)
+			} else {
+				queueSize = int(queueSizeTmp)
+			}
+		} else if !isBlocking {
+			queueSize = 1000000
+		}
+
 		hostname := listenAddrUrl.Hostname()
 		port, err := strconv.ParseUint(listenAddrUrl.Port(), 10, 64)
 		if err != nil {
@@ -223,12 +253,18 @@ func main() {
 			slog.String("hostname", hostname),
 			slog.Int64("port", int64(port)),
 			slog.Int("count", numSockets),
+			slog.Int64("workers", int64(numWorkers)),
+			slog.Bool("blocking", isBlocking),
+			slog.Int64("queue_size", int64(queueSize)),
 		}
 		logger := logger.With(logAttr...)
 		logger.Info("starting collection")
 
 		cfg := &utils.UDPReceiverConfig{
-			Sockets: numSockets,
+			Sockets:   numSockets,
+			Workers:   numWorkers,
+			QueueSize: queueSize,
+			Blocking:  isBlocking,
 		}
 		recv, err := utils.NewUDPReceiver(cfg)
 		if err != nil {
@@ -249,6 +285,8 @@ func main() {
 			p = utils.NewSFlowPipe(cfgPipe)
 		} else if listenAddrUrl.Scheme == "netflow" {
 			p = utils.NewNetFlowPipe(cfgPipe)
+		} else if listenAddrUrl.Scheme == "flow" {
+			p = utils.NewFlowPipe(cfgPipe)
 		} else {
 			logger.Error("scheme does not exist", slog.String("error", listenAddrUrl.Scheme))
 			os.Exit(1)
