@@ -16,6 +16,14 @@ const (
 	FORMAT_TYPE_IP
 	FORMAT_TYPE_MAC
 	FORMAT_TYPE_BYTES
+	FIELD_IF_IN       string = "InIf"
+	FIELD_IF_OUT      string = "OutIf"
+	FIELD_IF_IN_NAME  string = "InIfName"
+	FIELD_IF_OUT_NAME string = "OutIfName"
+	FIELD_FLOW_DIR    string = "FlowDirectionName"
+	VALUE_DIR_IN      string = "In"
+	VALUE_DIR_OUT     string = "Out"
+	VALUE_FALLBACK    string = "" // fields will be hidden if set to empty string
 )
 
 var (
@@ -48,6 +56,10 @@ var (
 		133: "RouterSolicitation",
 		134: "RouterAdvertisement",
 	}
+	FlowDirectionName = map[uint8]string{
+		0: VALUE_DIR_IN,
+		1: VALUE_DIR_OUT,
+	}
 
 	TextFields = map[string]int{
 		"Type":           FORMAT_TYPE_STRING_FUNC,
@@ -61,9 +73,23 @@ var (
 	}
 
 	RenderExtras = map[string]RenderExtraFunction{
-		"EtypeName": RenderExtraFunctionEtypeName,
-		"ProtoName": RenderExtraFunctionProtoName,
-		"IcmpName":  RenderExtraFunctionIcmpName,
+		"EtypeName":       RenderExtraFunctionEtypeName,
+		"ProtoName":       RenderExtraFunctionProtoName,
+		"IcmpName":        RenderExtraFunctionIcmpName,
+		"TcpFlagsName":    RenderExtraFunctionTcpFlagsName,
+		FIELD_FLOW_DIR:    RenderExtraFunctionFlowDirectionName,
+		FIELD_IF_IN_NAME:  RenderExtraFunctionInIfName,
+		FIELD_IF_OUT_NAME: RenderExtraFunctionOutIfName,
+		"FlowTypeName":    RenderExtraFunctionFlowTypeName,
+	}
+
+	RenderTcpFlags = map[string]string{
+		"1": "UP",
+		"2": "ACK",
+		"3": "PUSH",
+		"4": "RST",
+		"5": "SYN",
+		"6": "FIN",
 	}
 )
 
@@ -73,7 +99,7 @@ func AddTextField(name string, jtype int) {
 	TextFieldsTypes = append(TextFieldsTypes, jtype)
 }*/
 
-type RenderExtraFunction func(interface{}) string
+type RenderExtraFunction func(interface{}, map[string]string) string
 
 func RenderExtraFetchNumbers(msg interface{}, fields []string) []uint64 {
 	vfm := reflect.ValueOf(msg)
@@ -90,18 +116,146 @@ func RenderExtraFetchNumbers(msg interface{}, fields []string) []uint64 {
 	return values
 }
 
-func RenderExtraFunctionEtypeName(msg interface{}) string {
+func RenderExtraFetchIp(msg interface{}, field string) net.IP {
+	vfm := reflect.ValueOf(msg)
+	vfm = reflect.Indirect(vfm)
+
+	fieldValue := vfm.FieldByName(field)
+	if fieldValue.IsValid() {
+		ip := fieldValue.Bytes()
+		return net.ParseIP(RenderIP(ip))
+	}
+
+	return nil
+}
+
+func RenderExtraFetchString(msg interface{}, field string) string {
+	vfm := reflect.ValueOf(msg)
+	vfm = reflect.Indirect(vfm)
+
+	fieldValue := vfm.FieldByName(field)
+	if fieldValue.IsValid() {
+		return fmt.Sprint(fieldValue)
+	}
+
+	return ""
+}
+
+func RenderExtraFunctionEtypeName(msg interface{}, _ map[string]string) string {
 	num := RenderExtraFetchNumbers(msg, []string{"Etype"})
 	return EtypeName[uint32(num[0])]
 }
 
-func RenderExtraFunctionProtoName(msg interface{}) string {
+func RenderExtraFunctionProtoName(msg interface{}, _ map[string]string) string {
 	num := RenderExtraFetchNumbers(msg, []string{"Proto"})
 	return ProtoName[uint32(num[0])]
 }
-func RenderExtraFunctionIcmpName(msg interface{}) string {
+
+func RenderExtraFunctionIcmpName(msg interface{}, _ map[string]string) string {
 	num := RenderExtraFetchNumbers(msg, []string{"Proto", "IcmpCode", "IcmpType"})
 	return IcmpCodeType(uint32(num[0]), uint32(num[1]), uint32(num[2]))
+}
+
+func RenderExtraFunctionTcpFlagsName(msg interface{}, _ map[string]string) string {
+	flags := RenderExtraFetchString(msg, "TcpFlags")
+	flagsArr := []string{}
+
+	for _, flag := range RenderTcpFlags {
+		if strings.Contains(flags, flag) {
+			flagsArr = append(flagsArr, RenderTcpFlags[flag])
+		}
+	}
+
+	return strings.Join(flagsArr, "-")
+}
+
+func RenderExtraFunctionFlowTypeName(msg interface{}, extraMap map[string]string) string {
+	if extraMap[FIELD_FLOW_DIR] == VALUE_DIR_IN {
+		return "inbound"
+	}
+	num := RenderExtraFetchNumbers(msg, []string{"ForwardingStatus"})
+	if num[0] != uint64(0) {
+		return "forward"
+	}
+	if extraMap[FIELD_IF_IN_NAME] == VALUE_FALLBACK && extraMap[FIELD_IF_OUT_NAME] == VALUE_FALLBACK {
+		return "forward"
+	}
+	return "outbound"
+}
+
+func RenderExtraFunctionInIfName(msg interface{}, extraMap map[string]string) string {
+	return renderExtraFunctionInterfaceName(msg, extraMap, FIELD_IF_IN)
+}
+
+func RenderExtraFunctionOutIfName(msg interface{}, extraMap map[string]string) string {
+	return renderExtraFunctionInterfaceName(msg, extraMap, FIELD_IF_OUT)
+}
+
+func renderExtraFunctionInterfaceName(msg interface{}, extraMap map[string]string, field string) string {
+	samplerIP := RenderExtraFetchIp(msg, "SamplerAddress")
+	if samplerIP.String() != "127.0.0.1" && samplerIP.String() != "::1" {
+		// it will only work if the flow-source is this host
+		return ""
+	}
+	srcIP := RenderExtraFetchIp(msg, "SrcAddr")
+	dstIP := RenderExtraFetchIp(msg, "DstAddr")
+	direction := extraMap[FIELD_FLOW_DIR]
+
+	// if src/dst IP is used by this system
+	if field == FIELD_IF_IN {
+		dstIpLocal, localNic := isLocalIP(dstIP)
+		if dstIpLocal {
+			return localNic.Name
+		}
+	}
+
+	if field == FIELD_IF_OUT {
+		srcIpLocal, localNic := isLocalIP(srcIP)
+		if srcIpLocal {
+			return localNic.Name
+		}
+	}
+
+	// forward - if src/dst is in direct subnets
+	if direction == VALUE_DIR_IN {
+		if field == FIELD_IF_IN {
+			srcIpLocalNet, localNic := isLocalNet(&srcIP)
+			if srcIpLocalNet {
+				return localNic.Name
+			}
+			// todo: if dstIP is broadcast of local-net
+		}
+	}
+
+	if direction == VALUE_DIR_OUT {
+		if field == FIELD_IF_IN {
+			srcIpLocalNet, localNic := isLocalNet(&srcIP)
+			if srcIpLocalNet {
+				return localNic.Name
+			}
+		}
+	}
+
+	if field == FIELD_IF_OUT {
+		inIfName := extraMap[FIELD_IF_IN_NAME]
+		if inIfName != VALUE_FALLBACK {
+			dstIpLocalNet, localNic := isLocalNet(&dstIP)
+			if dstIpLocalNet && localNic.Name != inIfName {
+				return localNic.Name
+			}
+		}
+	}
+	// NOTE: could also evaluate existing routes for forward traffic
+
+	return VALUE_FALLBACK
+}
+
+func RenderExtraFunctionFlowDirectionName(msg interface{}, _ map[string]string) string {
+	num := RenderExtraFetchNumbers(msg, []string{"FlowDirection"})[0]
+	if int(num) > (len(FlowDirectionName) - 1) {
+		return VALUE_FALLBACK
+	}
+	return FlowDirectionName[uint8(num)]
 }
 
 func IcmpCodeType(proto, icmpCode, icmpType uint32) string {
@@ -176,6 +330,7 @@ func FormatMessageReflectCustom(msg interface{}, ext, quotes, sep, sign string, 
 	}
 
 	fstr := make([]string, len(customSelector))
+	extraMap := map[string]string{}
 
 	var i int
 
@@ -187,7 +342,11 @@ func FormatMessageReflectCustom(msg interface{}, ext, quotes, sep, sign string, 
 		fieldValue := vfm.FieldByName(fieldName)
 		// todo: replace s by json mapping of protobuf
 		if renderer, ok := RenderExtras[fieldName]; ok {
-			fstr[i] = fmt.Sprintf("%s%s%s%s%q", quotes, s, quotes, sign, renderer(msg))
+			value := renderer(msg, extraMap)
+			extraMap[fieldName] = value
+			if value != "" {
+				fstr[i] = fmt.Sprintf("%s%s%s%s%q", quotes, s, quotes, sign, value)
+			}
 			i++
 		} else if fieldValue.IsValid() {
 

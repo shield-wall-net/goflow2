@@ -1,0 +1,11 @@
+---
+
+run:
+  go: '1.21'
+  skip-dirs: []
+  skip-files: []
+
+issues:
+  exclude:
+    - 'S1000'
+  exclude-rules: []
